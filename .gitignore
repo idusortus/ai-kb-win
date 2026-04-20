@@ -1,0 +1,14 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+
+# .NET
+RagApi/bin/
+RagApi/obj/
+
+# Node
+node_modules/
+
+# Supabase local data
+supabase/.temp/

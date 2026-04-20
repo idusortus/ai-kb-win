@@ -1,0 +1,17 @@
+# Core (always needed)
+openai
+supabase
+python-dotenv
+
+# Ingest API (HTTP upload service)
+fastapi
+uvicorn[standard]
+python-multipart
+
+# Optional: for PDF/DOCX/PPTX ingestion
+# unstructured[all-docs]
+# pillow
+# pytesseract
+
+# Optional: for XLSX ingestion
+# openpyxl

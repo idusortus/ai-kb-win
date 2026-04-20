@@ -1,0 +1,612 @@
+diff --git a/RagApi/Program.cs b/RagApi/Program.cs
+index 7c300dc..93e6f84 100644
+--- a/RagApi/Program.cs
++++ b/RagApi/Program.cs
+@@ -88,16 +88,35 @@ app.MapPost("/chat", async (ChatRequest req, HttpResponse response) =>
+ 
+     // 4. Stream response via SSE
+     var chatClient = openai.GetChatClient(chatModel);
+-    var messages   = new ChatMessage[] {
+-        new SystemChatMessage(systemPrompt),
+-        new UserChatMessage(req.Question)
+-    };
++    var messages   = new List<ChatMessage> { new SystemChatMessage(systemPrompt) };
++
++    // Append conversation history for multi-turn context
++    if (req.History is { Length: > 0 })
++    {
++        foreach (var turn in req.History)
++        {
++            if (turn.Role == "user")
++                messages.Add(new UserChatMessage(turn.Content));
++            else if (turn.Role == "assistant")
++                messages.Add(new AssistantChatMessage(turn.Content));
++        }
++    }
++    messages.Add(new UserChatMessage(req.Question));
+ 
+     await foreach (var chunk in chatClient.CompleteChatStreamingAsync(messages))
+     {
+         foreach (var part in chunk.ContentUpdate)
+             await response.WriteAsync($"data: {part.Text}\n\n");
+     }
++
++    // Emit source metadata so the UI can render citations
++    var sourcesList = chunks.Select(c => new {
++        source    = c.GetProperty("source").GetString(),
++        file_type = c.GetProperty("file_type").GetString(),
++        similarity = c.GetProperty("similarity").GetDouble()
++    });
++    await response.WriteAsync(
++        $"data: [SOURCES]{JsonSerializer.Serialize(sourcesList)}\n\n");
+     await response.WriteAsync("data: [DONE]\n\n");
+ });
+ 
+@@ -106,4 +125,5 @@ app.MapGet("/health", () => Results.Ok(new { status = "ok", ts = DateTime.UtcNow
+ 
+ app.Run();
+ 
+-record ChatRequest(string Question);
++record ChatRequest(string Question, ChatTurn[]? History = null);
++record ChatTurn(string Role, string Content);
+diff --git a/RagApi/wwwroot/index.html b/RagApi/wwwroot/index.html
+index fec5c8b..779a46a 100644
+--- a/RagApi/wwwroot/index.html
++++ b/RagApi/wwwroot/index.html
+@@ -1,63 +1,215 @@
+-<!-- index.html — complete, self-contained -->
++<!-- index.html — Knowledge Base -->
+ <!DOCTYPE html>
+ <html lang="en">
+ <head>
+   <meta charset="UTF-8">
+   <meta name="viewport" content="width=device-width, initial-scale=1">
+   <title>Knowledge Base</title>
++  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
++  <script src="https://cdn.jsdelivr.net/npm/dompurify/dist/purify.min.js"></script>
+   <style>
+     * { box-sizing: border-box; margin: 0; padding: 0; }
+     body { font: 16px/1.5 system-ui, sans-serif; background: #f5f7fa;
+-           display: flex; flex-direction: column; height: 100vh; }
+-    #header { background: #2e75b6; color: #fff; padding: 12px 20px;
+-              font-size: 1.1rem; font-weight: 600; }
++           display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
++
++    /* ---- Header ---- */
++    #header { background: #2e75b6; color: #fff; padding: 10px 20px;
++              display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
++    #header h1 { font-size: 1.1rem; font-weight: 600; flex: 1; }
++    .hdr-btn { background: rgba(255,255,255,.18); border: 1px solid rgba(255,255,255,.4);
++               color: #fff; padding: 6px 14px; border-radius: 6px; cursor: pointer;
++               font-size: 0.875rem; font-weight: 500; }
++    .hdr-btn:hover { background: rgba(255,255,255,.3); }
++
++    /* ---- Messages ---- */
+     #messages { flex: 1; overflow-y: auto; padding: 20px;
+-                display: flex; flex-direction: column; gap: 12px; }
+-    .msg { max-width: 75%; padding: 10px 14px; border-radius: 10px;
+-           line-height: 1.55; white-space: pre-wrap; }
+-    .user { background: #2e75b6; color: #fff; align-self: flex-end; }
+-    .bot  { background: #fff; border: 1px solid #dce3ed;
+-            align-self: flex-start; }
+-    .bot .src { font-size: 0.78rem; color: #888; margin-top: 6px; }
++                display: flex; flex-direction: column; gap: 12px; min-height: 0; }
++    .msg { max-width: 78%; padding: 10px 14px; border-radius: 10px; line-height: 1.6; }
++    .user { background: #2e75b6; color: #fff; align-self: flex-end; white-space: pre-wrap; }
++    .bot  { background: #fff; border: 1px solid #dce3ed; align-self: flex-start; }
++
++    /* Markdown inside bot bubbles */
++    .bot .md { overflow-x: auto; }
++    .bot .md h1,.bot .md h2,.bot .md h3 { margin: .5em 0 .25em; font-size: 1em; font-weight: 600; }
++    .bot .md p  { margin: .25em 0; }
++    .bot .md ul,.bot .md ol { margin: .25em 0 .25em 1.4em; }
++    .bot .md code { background: #f0f0f0; padding: 1px 4px; border-radius: 3px; font-size: .88em; }
++    .bot .md pre  { background: #f6f8fa; padding: 10px; border-radius: 6px;
++                    overflow-x: auto; margin: .4em 0; }
++    .bot .md pre code { background: none; padding: 0; }
++    .bot .md blockquote { border-left: 3px solid #ccd4e0; padding-left: 10px;
++                          color: #666; margin: .4em 0; }
++    .bot .md table { border-collapse: collapse; font-size: .9em; margin: .5em 0; }
++    .bot .md th,.bot .md td { border: 1px solid #dce3ed; padding: 4px 8px; }
++    .bot .md th { background: #f0f4f8; }
+     .typing { color: #aaa; font-style: italic; }
++
++    /* Sources strip */
++    .sources { margin-top: 8px; padding-top: 6px; border-top: 1px solid #e8ecf0; }
++    .src-label { font-size: .75rem; color: #999; margin-bottom: 4px; }
++    .src-chips { display: flex; flex-wrap: wrap; gap: 4px; }
++    .src-chip  { font-size: .72rem; background: #f0f4f8; border: 1px solid #d0d9e5;
++                 border-radius: 4px; padding: 2px 7px; color: #555; }
++    .src-chip em { color: #999; font-style: normal; }
++
++    /* ---- Input row ---- */
+     #input-row { display: flex; gap: 8px; padding: 12px 20px;
+-                 background: #fff; border-top: 1px solid #dce3ed; }
+-    #q { flex: 1; padding: 10px 14px; border: 1px solid #ccd4e0;
+-         border-radius: 8px; font-size: 15px; resize: none; }
+-    #send { padding: 10px 20px; background: #2e75b6; color: #fff;
+-            border: none; border-radius: 8px; cursor: pointer;
+-            font-size: 15px; font-weight: 600; }
+-    #send:disabled { opacity: 0.5; cursor: default; }
++                 background: #fff; border-top: 1px solid #dce3ed; flex-shrink: 0; }
++    #q { flex: 1; padding: 10px 14px; border: 1px solid #ccd4e0; border-radius: 8px;
++         font-size: 15px; resize: none; font-family: inherit; }
++    #send { padding: 10px 20px; background: #2e75b6; color: #fff; border: none;
++            border-radius: 8px; cursor: pointer; font-size: 15px; font-weight: 600;
++            white-space: nowrap; }
++    #send:disabled { opacity: .5; cursor: default; }
++
++    /* ---- Modal backdrop ---- */
++    .backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.45);
++                display: flex; align-items: center; justify-content: center; z-index: 100; }
++    .backdrop.hidden { display: none; }
++    .modal { background: #fff; border-radius: 12px; padding: 24px; width: 580px;
++             max-width: 94vw; max-height: 85vh; display: flex; flex-direction: column;
++             box-shadow: 0 8px 32px rgba(0,0,0,.2); }
++    .modal h2 { font-size: 1.05rem; color: #1a3651; }
++    .modal-head { display: flex; align-items: center; margin-bottom: 16px; }
++    .modal-head h2 { flex: 1; }
++    .modal-close { background: none; border: none; font-size: 1.3rem;
++                   cursor: pointer; color: #999; line-height: 1; }
++    .modal-close:hover { color: #333; }
++
++    /* ---- Drop zone ---- */
++    #drop-zone { border: 2px dashed #aac4e0; border-radius: 8px; padding: 28px 20px;
++                 text-align: center; color: #6a8aaa; cursor: pointer;
++                 transition: background .15s; flex-shrink: 0; }
++    #drop-zone:hover, #drop-zone.over { background: #eaf3fb; border-color: #2e75b6; }
++    #drop-zone input { display: none; }
++    #drop-zone .hint { font-size: .82rem; margin-top: 4px; color: #99b0c5; }
++    #upload-list { margin-top: 14px; display: flex; flex-direction: column; gap: 6px;
++                   overflow-y: auto; }
++    .urow { display: flex; align-items: center; gap: 8px; padding: 6px 10px;
++            background: #f8fafc; border: 1px solid #e2eaf3;
++            border-radius: 6px; font-size: .88rem; }
++    .urow .fname  { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
++    .urow .ustatus { font-size: .8rem; color: #888; white-space: nowrap; }
++    .urow.ok  .ustatus { color: #27ae60; }
++    .urow.err .ustatus { color: #c0392b; }
++
++    /* ---- Documents table ---- */
++    #docs-scroll { overflow-y: auto; flex: 1; margin-top: 8px; }
++    #docs-scroll table { width: 100%; border-collapse: collapse; font-size: .88rem; }
++    #docs-scroll th { background: #f0f4f8; text-align: left; padding: 7px 10px;
++                      position: sticky; top: 0; }
++    #docs-scroll td { padding: 6px 10px; border-top: 1px solid #eaeef3;
++                      vertical-align: middle; }
++    #docs-scroll tr:hover td { background: #f8fafc; }
++    .del-btn { background: none; border: 1px solid #e0b4b4; color: #c0392b;
++               padding: 3px 8px; border-radius: 4px; cursor: pointer; font-size: .8rem; }
++    .del-btn:hover { background: #fdf2f2; }
++    .empty-msg { color: #aaa; text-align: center; padding: 24px; font-style: italic; }
+   </style>
+ </head>
+ <body>
+-  <div id="header">Knowledge Base</div>
++
++  <div id="header">
++    <h1>Knowledge Base</h1>
++    <button class="hdr-btn" onclick="openDocs()">Documents</button>
++    <button class="hdr-btn" onclick="openUpload()">&#8679; Upload</button>
++  </div>
++
+   <div id="messages"></div>
++
+   <div id="input-row">
+-    <textarea id="q" rows="2" placeholder="Ask a question..."></textarea>
++    <textarea id="q" rows="2" placeholder="Ask a question…"></textarea>
+     <button id="send" onclick="ask()">Send</button>
+   </div>
+ 
++  <!-- ===== Upload modal ===== -->
++  <div id="upload-backdrop" class="backdrop hidden">
++    <div class="modal">
++      <div class="modal-head">
++        <h2>Upload Documents</h2>
++        <button class="modal-close" onclick="closeUpload()">&#x2715;</button>
++      </div>
++      <div id="drop-zone" onclick="document.getElementById('file-pick').click()">
++        <input id="file-pick" type="file" multiple
++               accept=".pdf,.docx,.pptx,.xlsx,.txt,.md,.html,.htm,.png,.jpg,.jpeg,.webp,.tiff">
++        <div>Click or drag &amp; drop files here</div>
++        <div class="hint">PDF &middot; DOCX &middot; PPTX &middot; XLSX &middot; TXT &middot; MD &middot; HTML &middot; Images</div>
++      </div>
++      <div id="upload-list"></div>
++    </div>
++  </div>
++
++  <!-- ===== Documents modal ===== -->
++  <div id="docs-backdrop" class="backdrop hidden">
++    <div class="modal">
++      <div class="modal-head">
++        <h2>Indexed Documents</h2>
++        <button class="modal-close" onclick="closeDocs()">&#x2715;</button>
++      </div>
++      <div id="docs-scroll">
++        <div class="empty-msg">Loading&hellip;</div>
++      </div>
++    </div>
++  </div>
++
+   <script>
+-    const API = '';  // same origin — served by the .NET API
++    const API        = '';                       // .NET API — same origin
++    const INGEST_API = 'http://localhost:8000';  // Python ingest service
++
+     const feed = document.getElementById('messages');
+     const qEl  = document.getElementById('q');
+     const btn  = document.getElementById('send');
+ 
+-    // Submit on Enter (Shift+Enter for newline)
++    // Rolling conversation history (last 6 turns = 12 messages)
++    let history = [];
++
++    marked.setOptions({ breaks: true });
++
+     qEl.addEventListener('keydown', e => {
+       if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); ask(); }
+     });
+ 
++    // ── Chat ──────────────────────────────────────────────────────
++
+     function addMsg(role, text = '') {
+       const el = document.createElement('div');
+       el.className = `msg ${role === 'user' ? 'user' : 'bot'}`;
+-      el.textContent = text;
++      if (role === 'user') {
++        el.textContent = text;
++      } else {
++        el.innerHTML = '<div class="md"></div>';
++      }
+       feed.appendChild(el);
+       feed.scrollTop = feed.scrollHeight;
+       return el;
+     }
+ 
++    function renderMd(botEl, text) {
++      botEl.querySelector('.md').innerHTML =
++        DOMPurify.sanitize(marked.parse(text));
++    }
++
++    function appendSources(botEl, sources) {
++      if (!sources || !sources.length) return;
++      // Deduplicate by source filename
++      const seen = new Set();
++      const unique = sources.filter(s => {
++        if (seen.has(s.source)) return false;
++        seen.add(s.source); return true;
++      });
++      const div = document.createElement('div');
++      div.className = 'sources';
++      div.innerHTML =
++        '<div class="src-label">Sources</div>' +
++        '<div class="src-chips">' +
++        unique.map(s =>
++          `<span class="src-chip">${s.source}` +
++          ` <em>${(s.similarity * 100).toFixed(0)}%</em></span>`
++        ).join('') +
++        '</div>';
++      botEl.appendChild(div);
++    }
++
+     async function ask() {
+       const question = qEl.value.trim();
+       if (!question) return;
+@@ -65,39 +217,177 @@
+       btn.disabled = true;
+ 
+       addMsg('user', question);
+-      const botEl = addMsg('bot', '...');
+-      botEl.classList.add('typing');
++      const botEl = addMsg('bot');
++      const mdDiv = botEl.querySelector('.md');
++      mdDiv.classList.add('typing');
++      mdDiv.textContent = '…';
++
++      let full    = '';
++      let sources = null;
+ 
+       try {
+         const resp = await fetch(`${API}/chat`, {
+-          method: 'POST',
++          method:  'POST',
+           headers: { 'Content-Type': 'application/json' },
+-          body: JSON.stringify({ question })
++          body:    JSON.stringify({ question, history }),
+         });
+ 
+         const reader  = resp.body.getReader();
+         const decoder = new TextDecoder();
+-        let full = '';
+-
+-        botEl.classList.remove('typing');
+-        botEl.textContent = '';
++        mdDiv.classList.remove('typing');
++        mdDiv.textContent = '';
+ 
+         while (true) {
+           const { done, value } = await reader.read();
+           if (done) break;
+-          decoder.decode(value).split('\n')
+-            .filter(l => l.startsWith('data: ') && !l.includes('[DONE]'))
+-            .forEach(l => { full += l.slice(6); botEl.textContent = full; });
+-          feed.scrollTop = feed.scrollHeight;
++          for (const line of decoder.decode(value).split('\n')) {
++            if (!line.startsWith('data: ')) continue;
++            const payload = line.slice(6);
++            if (payload === '[DONE]') continue;
++            if (payload.startsWith('[SOURCES]')) {
++              try { sources = JSON.parse(payload.slice(9)); } catch (_) {}
++              continue;
++            }
++            full += payload;
++            renderMd(botEl, full);
++            feed.scrollTop = feed.scrollHeight;
++          }
+         }
+ 
++        // Save turn in history; keep last 12 messages (6 turns)
++        history.push({ role: 'user',      content: question });
++        history.push({ role: 'assistant', content: full });
++        if (history.length > 12) history = history.slice(-12);
++
++        appendSources(botEl, sources);
++
+       } catch (err) {
+-        botEl.textContent = 'Error connecting to API. Is it running?';
+-        botEl.style.color = '#c0392b';
++        mdDiv.classList.remove('typing');
++        mdDiv.textContent = 'Error connecting to API. Is it running?';
++        mdDiv.style.color = '#c0392b';
+       }
++
+       btn.disabled = false;
+       qEl.focus();
+     }
++
++    // ── Upload ────────────────────────────────────────────────────
++
++    const uploadBackdrop = document.getElementById('upload-backdrop');
++    const uploadList     = document.getElementById('upload-list');
++    const dropZone       = document.getElementById('drop-zone');
++    const filePick       = document.getElementById('file-pick');
++
++    function openUpload()  { uploadBackdrop.classList.remove('hidden'); }
++    function closeUpload() { uploadBackdrop.classList.add('hidden'); }
++
++    uploadBackdrop.addEventListener('click', e => {
++      if (e.target === uploadBackdrop) closeUpload();
++    });
++
++    dropZone.addEventListener('dragover',  e => { e.preventDefault(); dropZone.classList.add('over'); });
++    dropZone.addEventListener('dragleave', ()  => dropZone.classList.remove('over'));
++    dropZone.addEventListener('drop', e => {
++      e.preventDefault();
++      dropZone.classList.remove('over');
++      [...e.dataTransfer.files].forEach(uploadFile);
++    });
++
++    filePick.addEventListener('change', () => {
++      [...filePick.files].forEach(uploadFile);
++      filePick.value = '';
++    });
++
++    function uploadFile(file) {
++      const row = document.createElement('div');
++      row.className = 'urow';
++      row.innerHTML =
++        `<span class="fname">${file.name}</span>` +
++        `<span class="ustatus">Uploading&hellip;</span>`;
++      uploadList.appendChild(row);
++      const statusEl = row.querySelector('.ustatus');
++
++      const fd = new FormData();
++      fd.append('file', file);
++      fetch(`${INGEST_API}/ingest`, { method: 'POST', body: fd })
++        .then(r => r.json())
++        .then(data => {
++          if (data.status === 'ok') {
++            row.classList.add('ok');
++            statusEl.textContent = `\u2713 ${data.chunks_added} chunks`;
++          } else {
++            row.classList.add('err');
++            statusEl.textContent = `Error: ${data.detail ?? 'unknown'}`;
++          }
++        })
++        .catch(() => {
++          row.classList.add('err');
++          statusEl.textContent = 'Connection error';
++        });
++    }
++
++    // ── Documents ─────────────────────────────────────────────────
++
++    const docsBackdrop = document.getElementById('docs-backdrop');
++    const docsScroll   = document.getElementById('docs-scroll');
++
++    function openDocs() {
++      docsBackdrop.classList.remove('hidden');
++      loadDocuments();
++    }
++    function closeDocs() { docsBackdrop.classList.add('hidden'); }
++
++    docsBackdrop.addEventListener('click', e => {
++      if (e.target === docsBackdrop) closeDocs();
++    });
++
++    function loadDocuments() {
++      docsScroll.innerHTML = '<div class="empty-msg">Loading&hellip;</div>';
++      fetch(`${INGEST_API}/documents`)
++        .then(r => r.json())
++        .then(docs => {
++          if (!docs.length) {
++            docsScroll.innerHTML = '<div class="empty-msg">No documents indexed yet.</div>';
++            return;
++          }
++          docsScroll.innerHTML =
++            `<table>
++              <thead><tr>
++                <th>File</th><th>Type</th><th>Chunks</th><th>Ingested</th><th></th>
++              </tr></thead>
++              <tbody>` +
++            docs.map(d =>
++              `<tr>
++                <td>${d.source}</td>
++                <td>${d.file_type}</td>
++                <td>${d.chunk_count}</td>
++                <td>${new Date(d.last_ingested).toLocaleDateString()}</td>
++                <td><button class="del-btn"
++                      onclick="deleteDoc('${d.source.replace(/'/g, "\\'")}', this)">
++                    Delete</button></td>
++              </tr>`
++            ).join('') +
++            `</tbody></table>`;
++        })
++        .catch(() => {
++          docsScroll.innerHTML =
++            '<div class="empty-msg">Could not reach ingest service (port 8000). ' +
++            'Run: <code>uvicorn ingest_api:app --port 8000</code></div>';
++        });
++    }
++
++    function deleteDoc(source, btn) {
++      if (!confirm(`Delete all chunks for "${source}"?`)) return;
++      btn.disabled = true;
++      fetch(`${INGEST_API}/documents/${encodeURIComponent(source)}`,
++            { method: 'DELETE' })
++        .then(r => r.json())
++        .then(() => loadDocuments())
++        .catch(() => { btn.disabled = false; alert('Delete failed.'); });
++    }
++  </script>
++</body>
++</html>
+   </script>
+ </body>
+ </html>
+diff --git a/ingest_api.py b/ingest_api.py
+new file mode 100644
+index 0000000..8939b79
+--- /dev/null
++++ b/ingest_api.py
+@@ -0,0 +1,79 @@
++# ingest_api.py — HTTP wrapper around ingest.py
++# Usage: uvicorn ingest_api:app --port 8000 --reload
++
++import tempfile
++from pathlib import Path
++
++from fastapi import FastAPI, File, HTTPException, UploadFile
++from fastapi.middleware.cors import CORSMiddleware
++
++# Re-use all ingest logic (and the already-configured supabase + ai clients)
++from ingest import IMAGE_EXT, SUPPORTED, ingest_document, ingest_image, supabase
++
++app = FastAPI(title="KB Ingest API")
++
++app.add_middleware(
++    CORSMiddleware,
++    allow_origins=["*"],
++    allow_methods=["*"],
++    allow_headers=["*"],
++)
++
++
++@app.post("/ingest")
++async def ingest_file(file: UploadFile = File(...)):
++    """Accept a single file upload, chunk, embed, and upsert into the KB."""
++    # Sanitise: use only the basename (no path traversal)
++    name   = Path(file.filename).name
++    suffix = Path(name).suffix.lower()
++
++    if suffix not in SUPPORTED and suffix not in IMAGE_EXT:
++        raise HTTPException(
++            status_code=415,
++            detail=(
++                f"Unsupported file type '{suffix}'. "
++                f"Supported: {sorted(SUPPORTED | IMAGE_EXT)}"
++            ),
++        )
++
++    tmp_dir  = tempfile.mkdtemp()
++    tmp_path = Path(tmp_dir) / name
++    try:
++        tmp_path.write_bytes(await file.read())
++
++        # Always replace existing chunks so re-uploading refreshes the doc.
++        supabase.table("chunks").delete().eq("source", name).execute()
++
++        if suffix in IMAGE_EXT:
++            n = ingest_image(tmp_path)
++        else:
++            # clear_existing=False because we already deleted above
++            n = ingest_document(tmp_path, clear_existing=False)
++
++        return {"source": name, "chunks_added": n, "status": "ok"}
++    finally:
++        if tmp_path.exists():
++            tmp_path.unlink()
++        try:
++            Path(tmp_dir).rmdir()
++        except OSError:
++            pass
++
++
++@app.get("/documents")
++def list_documents():
++    """Return one row per indexed document with chunk count and last-ingested date."""
++    result = supabase.rpc("list_documents", {}).execute()
++    return result.data or []
++
++
++@app.delete("/documents/{source}")
++def delete_document(source: str):
++    """Remove all chunks belonging to a source document."""
++    supabase.table("chunks").delete().eq("source", source).execute()
++    return {"deleted": source, "status": "ok"}
++
++
++@app.get("/health")
++def health():
++    return {"status": "ok"}
+diff --git a/requirements.txt b/requirements.txt
+index 412d43d..9206189 100644
+--- a/requirements.txt
++++ b/requirements.txt
+@@ -3,6 +3,11 @@ openai
+ supabase
+ python-dotenv
+ 
++# Ingest API (HTTP upload service)
++fastapi
++uvicorn[standard]
++python-multipart
++
+ # Optional: for PDF/DOCX/PPTX ingestion
+ # unstructured[all-docs]
+ # pillow
+diff --git a/supabase/schema.sql b/supabase/schema.sql
+index e64935b..d4ffd34 100644
+--- a/supabase/schema.sql
++++ b/supabase/schema.sql
+@@ -22,6 +22,20 @@ create table chunks (
+ create index on chunks
+   using hnsw (embedding vector_cosine_ops);
+ 
++-- Document listing function called by ingest API
++create or replace function list_documents()
++returns table (
++  source        text,
++  file_type     text,
++  chunk_count   bigint,
++  last_ingested timestamptz
++) language sql stable as $$
++  select source, file_type, count(*) as chunk_count, max(ingested_at) as last_ingested
++  from   chunks
++  group  by source, file_type
++  order  by max(ingested_at) desc;
++$$;
++
+ -- Similarity search function called by .NET API
+ create or replace function match_chunks(
+   query_embedding  vector(768),

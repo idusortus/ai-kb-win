@@ -1,0 +1,103 @@
+<!-- index.html — complete, self-contained -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Knowledge Base</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font: 16px/1.5 system-ui, sans-serif; background: #f5f7fa;
+           display: flex; flex-direction: column; height: 100vh; }
+    #header { background: #2e75b6; color: #fff; padding: 12px 20px;
+              font-size: 1.1rem; font-weight: 600; }
+    #messages { flex: 1; overflow-y: auto; padding: 20px;
+                display: flex; flex-direction: column; gap: 12px; }
+    .msg { max-width: 75%; padding: 10px 14px; border-radius: 10px;
+           line-height: 1.55; white-space: pre-wrap; }
+    .user { background: #2e75b6; color: #fff; align-self: flex-end; }
+    .bot  { background: #fff; border: 1px solid #dce3ed;
+            align-self: flex-start; }
+    .bot .src { font-size: 0.78rem; color: #888; margin-top: 6px; }
+    .typing { color: #aaa; font-style: italic; }
+    #input-row { display: flex; gap: 8px; padding: 12px 20px;
+                 background: #fff; border-top: 1px solid #dce3ed; }
+    #q { flex: 1; padding: 10px 14px; border: 1px solid #ccd4e0;
+         border-radius: 8px; font-size: 15px; resize: none; }
+    #send { padding: 10px 20px; background: #2e75b6; color: #fff;
+            border: none; border-radius: 8px; cursor: pointer;
+            font-size: 15px; font-weight: 600; }
+    #send:disabled { opacity: 0.5; cursor: default; }
+  </style>
+</head>
+<body>
+  <div id="header">Knowledge Base</div>
+  <div id="messages"></div>
+  <div id="input-row">
+    <textarea id="q" rows="2" placeholder="Ask a question..."></textarea>
+    <button id="send" onclick="ask()">Send</button>
+  </div>
+
+  <script>
+    const API = '';  // same origin — served by the .NET API
+    const feed = document.getElementById('messages');
+    const qEl  = document.getElementById('q');
+    const btn  = document.getElementById('send');
+
+    // Submit on Enter (Shift+Enter for newline)
+    qEl.addEventListener('keydown', e => {
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); ask(); }
+    });
+
+    function addMsg(role, text = '') {
+      const el = document.createElement('div');
+      el.className = `msg ${role === 'user' ? 'user' : 'bot'}`;
+      el.textContent = text;
+      feed.appendChild(el);
+      feed.scrollTop = feed.scrollHeight;
+      return el;
+    }
+
+    async function ask() {
+      const question = qEl.value.trim();
+      if (!question) return;
+      qEl.value = '';
+      btn.disabled = true;
+
+      addMsg('user', question);
+      const botEl = addMsg('bot', '...');
+      botEl.classList.add('typing');
+
+      try {
+        const resp = await fetch(`${API}/chat`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ question })
+        });
+
+        const reader  = resp.body.getReader();
+        const decoder = new TextDecoder();
+        let full = '';
+
+        botEl.classList.remove('typing');
+        botEl.textContent = '';
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          decoder.decode(value).split('\n')
+            .filter(l => l.startsWith('data: ') && !l.includes('[DONE]'))
+            .forEach(l => { full += l.slice(6); botEl.textContent = full; });
+          feed.scrollTop = feed.scrollHeight;
+        }
+
+      } catch (err) {
+        botEl.textContent = 'Error connecting to API. Is it running?';
+        botEl.style.color = '#c0392b';
+      }
+      btn.disabled = false;
+      qEl.focus();
+    }
+  </script>
+</body>
+</html>

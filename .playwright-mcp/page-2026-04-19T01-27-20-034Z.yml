@@ -1,0 +1,8 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e2]: Knowledge Base
+  - generic [ref=e3]:
+    - generic [ref=e7]: What is this knowledge base about?
+    - generic [ref=e8]: ...
+  - generic [ref=e4]:
+    - textbox "Ask a question..." [ref=e5]
+    - button "Send" [disabled] [ref=e6]

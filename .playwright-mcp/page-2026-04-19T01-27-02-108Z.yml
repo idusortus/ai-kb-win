@@ -1,0 +1,5 @@
+- generic [ref=e1]:
+  - generic [ref=e2]: Knowledge Base
+  - generic [ref=e4]:
+    - textbox "Ask a question..." [active] [ref=e5]
+    - button "Send" [ref=e6] [cursor=pointer]
