@@ -68,12 +68,16 @@ pip install -r requirements.txt
 
 ### 6. Ingest documents (CLI)
 
-Drop files into `./docs` (TXT, MD, HTML work out of the box; PDF/DOCX/PPTX/XLSX require the optional deps below).
+Drop files into `./docs` (TXT, MD, HTML, and images work out of the box;
+PDF/DOCX/PPTX/XLSX require the optional deps below).  
+**Note:** only files directly in the target folder are processed — subdirectories are not traversed.
 
 ```powershell
 py ingest.py ./docs
 # Add --clear to wipe and re-ingest
 ```
+
+**Supported image formats:** PNG, JPG, JPEG, WEBP, TIFF — described via the vision model and indexed automatically.
 
 **Optional deps** — install these if you need PDF/DOCX/PPTX/XLSX support:
 
@@ -128,8 +132,10 @@ RagApi also serves index.html (the chat UI) as static files.
 
 ## Switching to OpenAI Cloud
 
-Set `OPENAI_API_KEY` in `.env` — both `ingest.py` and `RagApi` auto-detect it
-and switch from Ollama to OpenAI. You will also need to:
+Set `OPENAI_API_KEY` in `.env` — `ingest.py` and `ingest_api.py` auto-detect it
+and switch from Ollama to OpenAI. For `RagApi`, add the variable to
+`RagApi/Properties/launchSettings.json` under `environmentVariables` (or set it
+as a system environment variable). You will also need to:
 1. Change `vector(768)` → `vector(1536)` in `supabase/schema.sql`
 2. Re-apply the schema (`DROP TABLE chunks;` then re-run)
 3. Re-ingest all documents (`py ingest.py ./docs --clear`)
