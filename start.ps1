@@ -75,8 +75,8 @@ if (-not (Test-Path $venvActivate)) {
 } 
 
 $ingestJob = Start-Process -PassThru -NoNewWindow -FilePath 'powershell' -ArgumentList @(
-    '-NoProfile', '-Command',
-    "Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned; & '$venvActivate'; Set-Location '$ProjectRoot'; uvicorn ingest_api:app --port 8000 --reload"
+    '-NoProfile', '-ExecutionPolicy', 'RemoteSigned', '-Command',
+    "& '$venvActivate'; Set-Location '$ProjectRoot'; uvicorn ingest_api:app --port 8000 --reload"
 )
 Write-Host "  Ingest API started (PID: $($ingestJob.Id))" -ForegroundColor Green
 
